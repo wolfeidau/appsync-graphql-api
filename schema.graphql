@@ -1,0 +1,38 @@
+type Ticket {
+  customerId: String!
+  ticketId: String!
+  name: String
+  email: String
+  company: String
+}
+
+type TicketsPage {
+  items: [Ticket]
+  nextToken: String
+}
+
+type Mutation {
+  saveTicket(
+    customerId: String!,
+    ticketId: String!,
+    name: String!,
+    email: String!,
+    company: String!
+    description: String!
+  ): Ticket
+  deleteTicket(customerId: String!, ticketId: String!): Ticket
+}
+
+type Query {
+  getTicket(customerId: String!, ticketId: String!): Ticket
+  listTicketByCustomer(customerId: String!, nextToken: String, limit: Int = 20): TicketsPage
+}
+
+type Subscription {
+  newTicket(customerId: String!): Ticket @aws_subscribe(mutations: ["saveTicket"])
+}
+
+schema {
+  query: Query
+  mutation: Mutation
+}

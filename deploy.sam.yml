@@ -1,0 +1,223 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'appsync: Serverless GraphQL datasource for tickets, a @wolfeidau template'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+
+  EnvironmentName:
+    Type: String
+    Default: dev
+
+Resources:
+
+  TicketsGraphQLApi:
+    Type: AWS::AppSync::GraphQLApi
+    Properties:
+      Name: !Sub "TicketsGraphQLApi-${EnvironmentName}"
+      AuthenticationType: AWS_IAM
+      LogConfig:
+        CloudWatchLogsRoleArn: !GetAtt AppSyncServiceRole.Arn
+        FieldLogLevel: "ERROR"
+
+  TicketsAppSyncSchema:
+    Type: "AWS::AppSync::GraphQLSchema"
+    Properties:
+      ApiId: !GetAtt TicketsGraphQLApi.ApiId
+      DefinitionS3Location: ./schema.graphql
+
+  AppSyncServiceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "appsync.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSAppSyncPushToCloudWatchLogs
+
+  AppSyncLambdaInvokePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: AppSyncLambdaInvokePolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - lambda:*
+          Resource: !GetAtt TicketsLambdaFunction.Arn
+      Roles:
+      - !Ref AppSyncServiceRole
+
+  AppSyncLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+
+  DynamodbAccessPolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "dynamodb-access"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:DeleteItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:BatchGetItem
+              - dynamodb:BatchWriteItem
+            Resource:
+              - !GetAtt TicketsTable.Arn
+              - !Sub '${TicketsTable.Arn}/*'
+      Roles:
+        - Ref: "AppSyncLambdaRole"
+
+  TicketsLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: nodejs8.10
+      Timeout: 10
+      MemorySize: 256
+      Handler: appsync.handler
+      CodeUri: ./handler.zip
+      Environment:
+        Variables:
+          TICKETS_TABLE_NAME: !Ref TicketsTable
+      Role:
+        Fn::GetAtt: AppSyncLambdaRole.Arn
+
+  TicketsLambdaDataSource:
+    Type: "AWS::AppSync::DataSource"
+    Properties:
+      ApiId: !GetAtt TicketsGraphQLApi.ApiId
+      Name: "TicketsLambdaDataSource"
+      Description: "Tickets Lambda data source"
+      Type: "AWS_LAMBDA"
+      ServiceRoleArn: !GetAtt AppSyncServiceRole.Arn
+      LambdaConfig:
+        LambdaFunctionArn: !GetAtt TicketsLambdaFunction.Arn
+
+  GetTicketsQueryResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt TicketsGraphQLApi.ApiId
+      TypeName: "Query"
+      FieldName: "getTicket"
+      DataSourceName: !GetAtt TicketsLambdaDataSource.Name
+      RequestMappingTemplate: |
+        {
+          "version": "2017-02-28",
+          "operation": "Invoke",
+          "payload": {
+            "field": "getTicket",
+            "arguments": $utils.toJson($context.arguments),
+            "identity": $utils.toJson($context.identity),
+          }
+        }
+      ResponseMappingTemplate: |
+        $utils.toJson($context.result)
+
+  ListTicketsQueryResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt TicketsGraphQLApi.ApiId
+      TypeName: "Query"
+      FieldName: "listTicketByCustomer"
+      DataSourceName: !GetAtt TicketsLambdaDataSource.Name
+      RequestMappingTemplate: |
+        {
+          "version": "2017-02-28",
+          "operation": "Invoke",
+          "payload": {
+            "field": "listTicketByCustomer",
+            "arguments": $utils.toJson($context.arguments),
+            "identity": $utils.toJson($context.identity),
+          }
+        }
+      ResponseMappingTemplate: |
+        $utils.toJson($context.result)
+
+  SaveTicketQueryResolver:
+    Type: "AWS::AppSync::Resolver"
+    Properties:
+      ApiId: !GetAtt TicketsGraphQLApi.ApiId
+      TypeName: "Mutation"
+      FieldName: "saveTicket"
+      DataSourceName: !GetAtt TicketsLambdaDataSource.Name
+      RequestMappingTemplate: |
+        {
+          "version": "2017-02-28",
+          "operation": "Invoke",
+          "payload": {
+            "field": "saveTicket",
+            "arguments": $utils.toJson($context.arguments),
+            "identity": $utils.toJson($context.identity),
+          }
+        }
+      ResponseMappingTemplate: |
+        $utils.toJson($context.result)
+
+  TicketsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: customerId
+          AttributeType: S
+        - AttributeName: ticketId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customerId
+          KeyType: HASH
+        - AttributeName: ticketId
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiry
+        Enabled: true
+
+Outputs:
+  ActivityTable:
+    Value: !Ref TicketsTable
+    Export:
+      Name: !Sub "${AWS::StackName}-TicketsTable"
+  TicketsGraphQLApi:
+    Description: Tickets GraphQL Name
+    Value: !Ref TicketsGraphQLApi
+    Export:
+      Name: !Sub "${AWS::StackName}-TicketsGraphQLApi"
+  TicketsGraphQLApiId:
+    Description: Unique AWS AppSync GraphQL API Identifier
+    Value: !GetAtt TicketsGraphQLApi.ApiId
+    Export:
+      Name: !Sub "${AWS::StackName}-TicketsGraphQLApiId"
+  GraphQLApiUrl:
+    Description: The Endpoint URL of your GraphQL API.
+    Value: !GetAtt TicketsGraphQLApi.GraphQLUrl
+    Export:
+      Name: !Sub "${AWS::StackName}-TicketsGraphQLApiUrl"
